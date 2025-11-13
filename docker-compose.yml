@@ -1,0 +1,16 @@
+services:
+  db:
+    image: pgvector/pgvector:pg15
+    environment:
+      POSTGRES_DB: java_club
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      TZ: Europe/Kyiv
+    ports:
+      - "5432:5432"
+    volumes:
+      - java_club:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  java_club:
