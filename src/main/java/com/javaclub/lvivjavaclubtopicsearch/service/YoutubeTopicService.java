@@ -49,9 +49,9 @@ public class YoutubeTopicService {
                 List<VideoItem> videoItems = fetchVideos(videoIds);
                 if (videoItems != null && !videoItems.isEmpty()) {
                     videoItems.stream()
-                            .map(VideoItem::snippet)
                             .filter(Objects::nonNull)
-                            .map(snippet -> new TopicDto(snippet.title(), snippet.description()))
+                            .map(this::toTopicDto)
+                            .filter(Objects::nonNull)
                             .forEach(topics::add);
                 }
             }
@@ -120,9 +120,26 @@ public class YoutubeTopicService {
     private record VideoResponse(List<VideoItem> items) {
     }
 
-    private record VideoItem(VideoSnippet snippet) {
+    private record VideoItem(String id, VideoSnippet snippet) {
     }
 
     private record VideoSnippet(String title, String description) {
+    }
+
+    private TopicDto toTopicDto(VideoItem video) {
+        if (video == null || video.snippet() == null) {
+            return null;
+        }
+
+        String url = buildVideoUrl(video.id());
+        VideoSnippet snippet = video.snippet();
+        return new TopicDto(snippet.title(), snippet.description(), url);
+    }
+
+    private static String buildVideoUrl(String videoId) {
+        if (videoId == null || videoId.isBlank()) {
+            return "";
+        }
+        return "https://www.youtube.com/watch?v=" + videoId;
     }
 }
