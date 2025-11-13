@@ -38,4 +38,5 @@ ai:
       temperature: 1.0
 
 youtube:
-  api-key: YOUTUBE_API_KEY
+  api-key: ${YOUTUBE_API_KEY}
+  channel-id: ${YOUTUBE_CHANNEL_ID}
