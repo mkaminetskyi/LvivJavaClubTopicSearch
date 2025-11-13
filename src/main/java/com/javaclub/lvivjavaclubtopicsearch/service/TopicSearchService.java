@@ -1,11 +1,11 @@
 package com.javaclub.lvivjavaclubtopicsearch.service;
 
-import com.javaclub.lvivjavaclubtopicsearch.config.TopicSearchProperties;
 import com.javaclub.lvivjavaclubtopicsearch.model.SimilarTopicDto;
 import com.javaclub.lvivjavaclubtopicsearch.model.TopicDto;
 import com.javaclub.lvivjavaclubtopicsearch.model.TopicIndexResponse;
 import com.javaclub.lvivjavaclubtopicsearch.model.TopicProposalDto;
 import com.javaclub.lvivjavaclubtopicsearch.model.TopicSearchResponse;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -13,29 +13,75 @@ import java.util.Objects;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
-import org.springframework.http.HttpStatus;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.client.RestClient;
 
 @Service
 public class TopicSearchService {
-
+    private static final String BASE_URL = "https://www.googleapis.com";
+    private static final String SEARCH_PATH = "/youtube/v3/search";
+    private static final String VIDEOS_PATH = "/youtube/v3/videos";
+    private static final int MAX_RESULTS = 50;
     private static final int TOP_K = 10;
 
-    private final YoutubeTopicService youtubeTopicService;
+    private final RestClient restClient;
     private final VectorStore vectorStore;
-    private final TopicSearchProperties topicSearchProperties;
+    private final double similarityThreshold;
+    private final String apiKey;
+    private final String channelId;
 
-    public TopicSearchService(YoutubeTopicService youtubeTopicService,
+    public TopicSearchService(RestClient.Builder restClientBuilder,
                               VectorStore vectorStore,
-                              TopicSearchProperties topicSearchProperties) {
-        this.youtubeTopicService = youtubeTopicService;
+                              @Value("${youtube.api-key}") String apiKey,
+                              @Value("${youtube.channel-id}") String channelId,
+                              @Value("${topics.similarity-threshold}") double similarityThreshold) {
+        this.restClient = restClientBuilder
+                .baseUrl(BASE_URL)
+                .build();
         this.vectorStore = vectorStore;
-        this.topicSearchProperties = topicSearchProperties;
+        this.similarityThreshold = similarityThreshold;
+        this.apiKey = apiKey;
+        this.channelId = channelId;
+    }
+
+    public List<TopicDto> fetchChannelTopics() {
+        List<TopicDto> topics = new ArrayList<>();
+        String pageToken = null;
+
+        do {
+            SearchResponse searchResponse = fetchSearchPage(pageToken);
+
+            if (searchResponse == null || searchResponse.items() == null || searchResponse.items().isEmpty()) {
+                break;
+            }
+
+            List<String> videoIds = searchResponse.items().stream()
+                    .map(SearchItem::id)
+                    .filter(Objects::nonNull)
+                    .map(SearchItemId::videoId)
+                    .filter(id -> id != null && !id.isBlank())
+                    .toList();
+
+            if (!videoIds.isEmpty()) {
+                List<VideoItem> videoItems = fetchVideos(videoIds);
+                if (videoItems != null && !videoItems.isEmpty()) {
+                    videoItems.stream()
+                            .filter(Objects::nonNull)
+                            .map(this::toTopicDto)
+                            .filter(Objects::nonNull)
+                            .forEach(topics::add);
+                }
+            }
+
+            pageToken = searchResponse.nextPageToken();
+        } while (pageToken != null && !pageToken.isBlank());
+
+        return topics;
     }
 
     public TopicIndexResponse indexChannelTopics() {
-        List<TopicDto> topics = youtubeTopicService.fetchChannelTopics();
+        List<TopicDto> topics = fetchChannelTopics();
         if (topics.isEmpty()) {
             return new TopicIndexResponse("Нових тем не знайдено.", 0);
         }
@@ -73,11 +119,54 @@ public class TopicSearchService {
 
         String verdict = similarTopics.stream()
                 .findFirst()
-                .filter(topic -> topic.similarity() >= topicSearchProperties.getSimilarityThreshold())
+                .filter(topic -> topic.similarity() >= similarityThreshold)
                 .map(topic -> "Така тема була – " + topic.videoUrl())
                 .orElse("Такої теми ще не було.");
 
         return new TopicSearchResponse(verdict, similarTopics);
+    }
+
+    private SearchResponse fetchSearchPage(String pageToken) {
+        return restClient.get()
+                .uri(uriBuilder -> {
+                    var builder = uriBuilder.path(SEARCH_PATH)
+                            .queryParam("part", "snippet")
+                            .queryParam("channelId", channelId)
+                            .queryParam("maxResults", MAX_RESULTS)
+                            .queryParam("order", "date")
+                            .queryParam("type", "video")
+                            .queryParam("key", apiKey);
+                    if (pageToken != null && !pageToken.isBlank()) {
+                        builder.queryParam("pageToken", pageToken);
+                    }
+                    return builder.build();
+                })
+                .retrieve()
+                .body(SearchResponse.class);
+    }
+
+    private List<VideoItem> fetchVideos(List<String> videoIds) {
+        if (videoIds == null || videoIds.isEmpty()) {
+            return List.of();
+        }
+
+        String ids = String.join(",", videoIds);
+
+        VideoResponse response = restClient.get()
+                .uri(uriBuilder -> uriBuilder.path(VIDEOS_PATH)
+                        .queryParam("part", "snippet")
+                        .queryParam("id", ids)
+                        .queryParam("maxResults", MAX_RESULTS)
+                        .queryParam("key", apiKey)
+                        .build())
+                .retrieve()
+                .body(VideoResponse.class);
+
+        if (response == null || response.items() == null) {
+            return List.of();
+        }
+
+        return response.items();
     }
 
     private Document toDocument(TopicDto topic) {
@@ -123,25 +212,58 @@ public class TopicSearchService {
     }
 
     private String buildQuery(TopicProposalDto proposal) {
-        if (proposal == null) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Необхідно передати тему для пошуку.");
-        }
-
         StringBuilder builder = new StringBuilder();
-        if (proposal.title() != null && !proposal.title().isBlank()) {
+
+        if (proposal != null && proposal.title() != null && !proposal.title().isBlank()) {
             builder.append(proposal.title());
         }
-        if (proposal.description() != null && !proposal.description().isBlank()) {
-            if (builder.length() > 0) {
+        if (proposal != null && proposal.description() != null && !proposal.description().isBlank()) {
+            if (!builder.isEmpty()) {
                 builder.append("\n\n");
             }
             builder.append(proposal.description());
         }
 
-        if (builder.length() == 0) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Необхідно вказати хоча б назву або опис теми.");
+        return builder.toString();
+    }
+
+    private record SearchResponse(List<SearchItem> items, String nextPageToken) {
+    }
+
+    private record SearchItem(SearchItemId id, SearchSnippet snippet) {
+    }
+
+    private record SearchItemId(String kind, String videoId) {
+    }
+
+    private record SearchSnippet(String title, String description) {
+    }
+
+    private record VideoResponse(List<VideoItem> items) {
+    }
+
+    private record VideoItem(String id, VideoSnippet snippet) {
+    }
+
+    private record VideoSnippet(String title, String description) {
+    }
+
+    private TopicDto toTopicDto(VideoItem video) {
+        if (video == null || video.snippet() == null) {
+            return null;
         }
 
-        return builder.toString();
+        String url = buildVideoUrl(video.id());
+        VideoSnippet snippet = video.snippet();
+
+        return new TopicDto(snippet.title(), snippet.description(), url);
+    }
+
+    private static String buildVideoUrl(String videoId) {
+        if (videoId == null || videoId.isBlank()) {
+            return "";
+        }
+
+        return "https://www.youtube.com/watch?v=" + videoId;
     }
 }

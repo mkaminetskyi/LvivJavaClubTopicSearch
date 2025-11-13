@@ -5,7 +5,6 @@ import com.javaclub.lvivjavaclubtopicsearch.model.TopicIndexResponse;
 import com.javaclub.lvivjavaclubtopicsearch.model.TopicProposalDto;
 import com.javaclub.lvivjavaclubtopicsearch.model.TopicSearchResponse;
 import com.javaclub.lvivjavaclubtopicsearch.service.TopicSearchService;
-import com.javaclub.lvivjavaclubtopicsearch.service.YoutubeTopicService;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -16,13 +15,11 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequiredArgsConstructor
 public class TopicController {
-
-    private final YoutubeTopicService youtubeTopicService;
     private final TopicSearchService topicSearchService;
 
     @GetMapping("/topics")
     public List<TopicDto> getTopics() {
-        return youtubeTopicService.fetchChannelTopics();
+        return topicSearchService.fetchChannelTopics();
     }
 
     @PostMapping("/topics/index")
