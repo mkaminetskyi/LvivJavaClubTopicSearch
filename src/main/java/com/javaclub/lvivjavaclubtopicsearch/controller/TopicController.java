@@ -1,5 +1,7 @@
 package com.javaclub.lvivjavaclubtopicsearch.controller;
 
+import com.javaclub.lvivjavaclubtopicsearch.model.TopicChatRequest;
+import com.javaclub.lvivjavaclubtopicsearch.model.TopicChatResponse;
 import com.javaclub.lvivjavaclubtopicsearch.model.TopicDto;
 import com.javaclub.lvivjavaclubtopicsearch.model.TopicIndexResponse;
 import com.javaclub.lvivjavaclubtopicsearch.model.TopicProposalDto;
@@ -30,5 +32,10 @@ public class TopicController {
     @PostMapping("/topics/search")
     public TopicSearchResponse searchTopics(@RequestBody TopicProposalDto proposal) {
         return topicSearchService.searchSimilarTopics(proposal);
+    }
+
+    @PostMapping("/topics/chat")
+    public TopicChatResponse chatAboutTopics(@RequestBody TopicChatRequest request) {
+        return topicSearchService.chatAboutTopics(request);
     }
 }

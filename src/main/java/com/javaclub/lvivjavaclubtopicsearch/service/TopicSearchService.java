@@ -1,6 +1,8 @@
 package com.javaclub.lvivjavaclubtopicsearch.service;
 
 import com.javaclub.lvivjavaclubtopicsearch.model.SimilarTopicDto;
+import com.javaclub.lvivjavaclubtopicsearch.model.TopicChatRequest;
+import com.javaclub.lvivjavaclubtopicsearch.model.TopicChatResponse;
 import com.javaclub.lvivjavaclubtopicsearch.model.TopicDto;
 import com.javaclub.lvivjavaclubtopicsearch.model.TopicIndexResponse;
 import com.javaclub.lvivjavaclubtopicsearch.model.TopicProposalDto;
@@ -10,9 +12,12 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.stream.Collectors;
+import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
@@ -27,12 +32,14 @@ public class TopicSearchService {
 
     private final RestClient restClient;
     private final VectorStore vectorStore;
+    private final ChatClient smartChatClient;
     private final double similarityThreshold;
     private final String apiKey;
     private final String channelId;
 
     public TopicSearchService(RestClient.Builder restClientBuilder,
                               VectorStore vectorStore,
+                              @Qualifier("smartChatClient") ChatClient smartChatClient,
                               @Value("${youtube.api-key}") String apiKey,
                               @Value("${youtube.channel-id}") String channelId,
                               @Value("${topics.similarity-threshold}") double similarityThreshold) {
@@ -40,6 +47,7 @@ public class TopicSearchService {
                 .baseUrl(BASE_URL)
                 .build();
         this.vectorStore = vectorStore;
+        this.smartChatClient = smartChatClient;
         this.similarityThreshold = similarityThreshold;
         this.apiKey = apiKey;
         this.channelId = channelId;
@@ -170,9 +178,9 @@ public class TopicSearchService {
     }
 
     private Document toDocument(TopicDto topic) {
-        String title = topic.title() == null ? "" : topic.title();
-        String description = topic.description() == null ? "" : topic.description();
-        String url = topic.videoUrl() == null ? "" : topic.videoUrl();
+        String title = Objects.toString(topic.title(), "");
+        String description = Objects.toString(topic.description(), "");
+        String url = Objects.toString(topic.videoUrl(), "");
 
         Map<String, Object> metadata = new HashMap<>();
         metadata.put("title", title);
@@ -188,7 +196,7 @@ public class TopicSearchService {
     }
 
     private SimilarTopicDto toSimilarTopic(Document document) {
-        Map<String, Object> metadata = document.getMetadata() != null ? document.getMetadata() : Map.of();
+        Map<String, Object> metadata = Objects.requireNonNullElseGet(document.getMetadata(), Map::of);
         double similarity = calculateSimilarityPercent(metadata);
         String title = Objects.toString(metadata.get("title"), "");
         String description = Objects.toString(metadata.get("description"), "");
@@ -197,12 +205,63 @@ public class TopicSearchService {
         return new SimilarTopicDto(title, description, url, similarity);
     }
 
+    public TopicChatResponse chatAboutTopics(TopicChatRequest request) {
+        if (request == null || request.question() == null || request.question().isBlank()) {
+            throw new IllegalArgumentException("Question must not be blank");
+        }
+
+        List<Document> documents = vectorStore.similaritySearch(
+                SearchRequest.builder()
+                        .query(request.question())
+                        .topK(TOP_K)
+                        .build());
+
+        if (documents == null) {
+            documents = List.of();
+        }
+
+        List<SimilarTopicDto> similarTopics = documents.stream()
+                .map(this::toSimilarTopic)
+                .toList();
+
+        String context = similarTopics.stream()
+                .map(this::formatTopicForContext)
+                .collect(Collectors.joining("\n\n"));
+
+        String answer = smartChatClient.prompt()
+                .system("""
+                        Ти асистент YouTube каналу Lviv Java Club і допомагаєш з вибором тем.
+                        Використовуй надані тобі відео як контекст і відповідай лише українською мовою.
+                        """)
+                .user(buildChatUserMessage(request.question(), context))
+                .call()
+                .content();
+
+        return new TopicChatResponse(answer, similarTopics);
+    }
+
+    private String formatTopicForContext(SimilarTopicDto topic) {
+        return "Назва: " + topic.title() +
+                "\nОпис: " + topic.description() +
+                "\nПосилання: " + topic.videoUrl() +
+                "\nСхожість: " + Math.round(topic.similarity()) + "%";
+    }
+
+    private String buildChatUserMessage(String question, String context) {
+        if (context == null || context.isBlank()) {
+            return "Питання: " + question + "\n\nКонтекст: Немає релевантних тем у базі.";
+        }
+
+        return "Питання: " + question + "\n\nКонтекст:\n" + context;
+    }
+
     private double calculateSimilarityPercent(Map<String, Object> metadata) {
         Object distanceObj = metadata.get("distance");
         if (distanceObj instanceof Number number) {
             double distance = Math.max(0d, Math.min(1d, number.doubleValue()));
             return (1 - distance) * 100d;
         }
+
         Object similarityObj = metadata.get("similarity");
         if (similarityObj instanceof Number number) {
             return Math.max(0d, Math.min(100d, number.doubleValue() * 100d));
